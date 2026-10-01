@@ -600,8 +600,8 @@ export function lockGate(manifest, root) {
   }
 }
 
-export async function loadPlugins(kind, { root, dryRun = false, pluginId = null }) {
-  const cfg = await loadPluginConfig(root);
+export async function loadPlugins(kind, { root, dataRoot = root, dryRun = false, pluginId = null }) {
+  const cfg = await loadPluginConfig(dataRoot);
   let manifests = discoverPlugins(pluginRoots(root), resolveSuccessorIds(root)).filter(m => m.hooks.includes(kind));
   if (pluginId) manifests = manifests.filter(m => m.id === pluginId);
   const out = [];
@@ -617,12 +617,15 @@ export async function loadPlugins(kind, { root, dryRun = false, pluginId = null 
 
 /** Lazily load dotenv exactly once (mirrors gemini-eval.mjs). Idempotent. */
 let dotenvLoaded = false;
-export async function loadDotenvOnce() {
+export async function loadDotenvOnce(root = null) {
   if (dotenvLoaded) return;
   dotenvLoaded = true;
   try {
     const { config } = await import('dotenv');
-    config();
+    // A split checkout keeps secrets with the user layer, not beside system
+    // code. Callers that know the data root pass it explicitly; the default
+    // preserves the historical process.cwd() lookup for third-party callers.
+    config(root ? { path: path.join(root, '.env'), quiet: true } : { quiet: true });
   } catch {
     // dotenv optional — fall back to ambient process.env (CI, exported vars).
   }
@@ -638,12 +641,12 @@ export async function loadDotenvOnce() {
  *
  * @param {string} kind
  * @param {*} payload   For provider this is unused; for ingest none; search a query; export a snapshot; notify a payload.
- * @param {{ root: string, dryRun?: boolean, timeoutMs?: number, pluginId?: string }} opts
+ * @param {{ root: string, dataRoot?: string, dryRun?: boolean, timeoutMs?: number, pluginId?: string }} opts
  * @returns {Promise<Array<{ id: string, ok: boolean, result?: any, error?: string }>>}
  */
-export async function runHook(kind, payload, { root, dryRun = false, timeoutMs = DEFAULT_HOOK_TIMEOUT_MS, pluginId = null }) {
-  await loadDotenvOnce();
-  const loaded = await loadPlugins(kind, { root, dryRun, pluginId });
+export async function runHook(kind, payload, { root, dataRoot = root, dryRun = false, timeoutMs = DEFAULT_HOOK_TIMEOUT_MS, pluginId = null }) {
+  await loadDotenvOnce(dataRoot);
+  const loaded = await loadPlugins(kind, { root, dataRoot, dryRun, pluginId });
   const results = [];
   for (const { id, hook, ctx } of loaded) {
     const invoke = kind === 'search'
@@ -689,7 +692,7 @@ export function filterResultsForId(results, id) {
  *     the plugin off yields a helpful error, not a confusing "unknown provider".
  *
  * @param {Map<string, any>} providersMap   The Map returned by scan.mjs loadProviders.
- * @param {{ root: string }} opts
+ * @param {{ root: string, dataRoot?: string }} opts
  */
 // A detect-exempt provider whose fetch throws an actionable message — used when
 // a known provider plugin is inactive (disabled / missing key / failed import)
@@ -702,14 +705,14 @@ function inactiveProviderStub(id, reason) {
   };
 }
 
-export async function mergeProviderPlugins(providersMap, { root }) {
-  if (!existsSync(pluginsConfigPath(root))) return; // (1) opted out → inert (no work, no env read)
+export async function mergeProviderPlugins(providersMap, { root, dataRoot = root }) {
+  if (!existsSync(pluginsConfigPath(dataRoot))) return; // (1) opted out → inert (no work, no env read)
 
   // Everything past the opt-out gate is wrapped so an UNANTICIPATED throw
   // (a callee regression) degrades to a ⚠️ and leaves the core providers Map
   // untouched — fail-open is enforced structurally here, not just emergently.
   try {
-    const cfg = await loadPluginConfig(root);
+    const cfg = await loadPluginConfig(dataRoot);
     const providerManifests = discoverPlugins(pluginRoots(root), resolveSuccessorIds(root)).filter(m => m.hooks.includes('provider'));
     if (providerManifests.length === 0) return;
 
@@ -717,7 +720,7 @@ export async function mergeProviderPlugins(providersMap, { root }) {
     const configuredOn = providerManifests.filter(m => cfg?.plugins?.[m.id]?.enabled === true);
     if (configuredOn.length === 0) return;
 
-    await loadDotenvOnce(); // (2) lazy, only now that an enabled provider plugin exists
+    await loadDotenvOnce(dataRoot); // (2) lazy, only now that an enabled provider plugin exists
 
     for (const manifest of configuredOn) {
       if (providersMap.has(manifest.id)) {
