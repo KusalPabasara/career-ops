@@ -160,3 +160,105 @@ test('provider engine discovers code in code root and config in data root', asyn
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+// A split checkout set up before this change can still have plugins.yml and
+// .env beside the code. They are not read from there (no fallback), so the
+// scan path has to say where they belong instead of reading as "no plugins".
+const LEFT_IN_CODE = /in the code folder/;
+
+// mergeProviderPlugins in a child, so the warning is checked on the real
+// stderr and the providers it merged come back on stdout.
+function mergeInChild(codeRoot, dataRoot) {
+  const engineUrl = pathToFileURL(join(ROOT, 'plugins', '_engine.mjs')).href;
+  const script = [
+    `const { mergeProviderPlugins } = await import(${JSON.stringify(engineUrl)});`,
+    'const providers = new Map();',
+    `await mergeProviderPlugins(providers, { root: ${JSON.stringify(codeRoot)}, dataRoot: ${JSON.stringify(dataRoot)} });`,
+    'process.stdout.write(JSON.stringify([...providers.keys()]));',
+  ].join('\n');
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: codeRoot,
+    encoding: 'utf-8',
+    timeout: 30_000,
+  });
+}
+
+function writeKeylessProvider(codeRoot, id) {
+  const pluginDir = join(codeRoot, 'plugins', id);
+  mkdirSync(pluginDir, { recursive: true });
+  writeFileSync(join(pluginDir, 'manifest.json'), JSON.stringify({
+    id,
+    apiVersion: 1,
+    description: 'left-behind fixture',
+    hooks: ['provider'],
+    humanInTheLoop: true,
+  }));
+  writeFileSync(
+    join(pluginDir, 'index.mjs'),
+    `export default { provider: { id: ${JSON.stringify(id)}, async fetch() { return []; } } };\n`,
+  );
+}
+
+test('split checkout: plugins.yml and .env left in the code root are named with where to move them', () => {
+  const codeRoot = sandbox('career-ops-plugin-left-code-');
+  const dataRoot = sandbox('career-ops-plugin-left-data-');
+  try {
+    writeKeylessProvider(codeRoot, 'left-demo');
+    writeFileSync(join(codeRoot, 'config', 'plugins.yml'), 'plugins:\n  left-demo:\n    enabled: true\n');
+    writeFileSync(join(codeRoot, '.env'), 'CAREER_OPS_LEFT_BEHIND=1\n');
+
+    const result = mergeInChild(codeRoot, dataRoot);
+
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    const lines = result.stderr.split('\n').filter(line => LEFT_IN_CODE.test(line));
+    const yml = lines.find(line => line.startsWith('⚠️  config/plugins.yml '));
+    const env = lines.find(line => line.startsWith('⚠️  .env '));
+    assert.ok(yml, `no plugins.yml warning on stderr:\n${result.stderr}`);
+    assert.ok(env, `no .env warning on stderr:\n${result.stderr}`);
+    assert.ok(yml.includes(join(codeRoot, 'config', 'plugins.yml')), yml);
+    assert.ok(yml.includes(join(dataRoot, 'config', 'plugins.yml')), yml);
+    assert.ok(env.includes(join(codeRoot, '.env')), env);
+    assert.ok(env.includes(join(dataRoot, '.env')), env);
+    // A warning, not a fallback: the code-root plugins.yml still enables nothing.
+    assert.equal(result.stdout, '[]');
+  } finally {
+    rmSync(codeRoot, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test('split checkout: plugins.yml in the data root raises no left-in-code warning', () => {
+  const codeRoot = sandbox('career-ops-plugin-moved-code-');
+  const dataRoot = sandbox('career-ops-plugin-moved-data-');
+  try {
+    // A stale copy in the code root does not matter once the data root has one.
+    writeFileSync(join(codeRoot, 'config', 'plugins.yml'), 'plugins: {}\n');
+    writeFileSync(join(dataRoot, 'config', 'plugins.yml'), 'plugins: {}\n');
+
+    const result = mergeInChild(codeRoot, dataRoot);
+
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, LEFT_IN_CODE);
+  } finally {
+    rmSync(codeRoot, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test('single root: plugins.yml and .env beside the code raise no warning', () => {
+  const root = sandbox('career-ops-plugin-one-root-');
+  try {
+    writeFileSync(join(root, 'config', 'plugins.yml'), 'plugins: {}\n');
+    writeFileSync(join(root, '.env'), 'CAREER_OPS_ONE_ROOT=1\n');
+
+    const result = mergeInChild(root, root);
+
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, LEFT_IN_CODE);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

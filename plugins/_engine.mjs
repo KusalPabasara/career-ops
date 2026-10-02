@@ -126,6 +126,35 @@ export async function loadPluginConfig(root) {
 }
 
 /**
+ * The user-layer files the plugin layer reads from the data root. Until it did,
+ * plugins.yml was read from (and `plugins.mjs enable` wrote it to) the code
+ * folder and .env came from the working directory, so an older split checkout
+ * can still have both beside the code.
+ */
+const USER_CONFIG_FILES = ['config/plugins.yml', '.env'];
+
+/**
+ * One ⚠️ line (stderr) per user config file that is in the code folder but not
+ * in the data folder. Without it a plugins.yml left beside the code reads as
+ * "no plugins configured" and every plugin goes quiet with no explanation.
+ * Checks existence only (.env is never opened here) and is not a fallback: the
+ * data root stays the only place these files are read from. Silent when both
+ * roots are the same folder.
+ * @param {string} root       Code root (where plugins/ lives).
+ * @param {string} dataRoot   Data root (getCareerOpsRoot()).
+ */
+export function warnConfigLeftInCodeRoot(root, dataRoot) {
+  if (path.resolve(root) === path.resolve(dataRoot)) return;
+  for (const name of USER_CONFIG_FILES) {
+    const left = path.join(root, name);
+    const target = path.join(dataRoot, name);
+    if (existsSync(left) && !existsSync(target)) {
+      console.warn(`⚠️  ${name} is in the code folder, not the data folder, so plugins do not read it: move ${left} to ${target}`);
+    }
+  }
+}
+
+/**
  * Validate a parsed manifest object. Returns a normalized manifest on success,
  * or null (with a ⚠️) on any violation. NEVER throws — identical fail-open to
  * scan.mjs loadProviders.
@@ -678,7 +707,10 @@ export function filterResultsForId(results, id) {
  * hook (scan.mjs calls this right after loadProviders). Critical guarantees:
  *
  *  1. BYTE-IDENTICAL when opted out: returns IMMEDIATELY if config/plugins.yml
- *     is absent — no discovery, no dotenv, no process.env mutation.
+ *     is absent — no discovery, no dotenv, no process.env mutation. The one
+ *     exception is a split checkout with plugins.yml or .env in the code folder
+ *     and not in the data folder: warnConfigLeftInCodeRoot names each one
+ *     first, so a stale location is never a silent opt-out.
  *  2. dotenv is loaded LAZILY and only after at least one enabled provider
  *     plugin is found, so a present-but-provider-less plugins.yml still touches
  *     no env.
@@ -706,6 +738,7 @@ function inactiveProviderStub(id, reason) {
 }
 
 export async function mergeProviderPlugins(providersMap, { root, dataRoot = root }) {
+  warnConfigLeftInCodeRoot(root, dataRoot);
   if (!existsSync(pluginsConfigPath(dataRoot))) return; // (1) opted out → inert (no work, no env read)
 
   // Everything past the opt-out gate is wrapped so an UNANTICIPATED throw
