@@ -220,6 +220,8 @@ test('split checkout: plugins.yml and .env left in the code root are named with 
     assert.ok(yml.includes(join(dataRoot, 'config', 'plugins.yml')), yml);
     assert.ok(env.includes(join(codeRoot, '.env')), env);
     assert.ok(env.includes(join(dataRoot, '.env')), env);
+    // .env stays readable beside the code for the eval scripts: copy, not move.
+    assert.ok(env.includes('copy the keys your plugins use'), env);
     // A warning, not a fallback: the code-root plugins.yml still enables nothing.
     assert.equal(result.stdout, '[]');
   } finally {

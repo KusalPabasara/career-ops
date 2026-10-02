@@ -131,7 +131,12 @@ export async function loadPluginConfig(root) {
  * folder and .env came from the working directory, so an older split checkout
  * can still have both beside the code.
  */
-const USER_CONFIG_FILES = ['config/plugins.yml', '.env'];
+// .env is also read beside the code by the eval scripts and direnv, so for it the
+// hint is to copy the plugin keys, not to move the file.
+const USER_CONFIG_FILES = [
+  { name: 'config/plugins.yml', hint: (left, target) => `move ${left} to ${target}` },
+  { name: '.env', hint: (left, target) => `copy the keys your plugins use from ${left} to ${target}` },
+];
 
 /**
  * One ⚠️ line (stderr) per user config file that is in the code folder but not
@@ -145,11 +150,11 @@ const USER_CONFIG_FILES = ['config/plugins.yml', '.env'];
  */
 export function warnConfigLeftInCodeRoot(root, dataRoot) {
   if (path.resolve(root) === path.resolve(dataRoot)) return;
-  for (const name of USER_CONFIG_FILES) {
+  for (const { name, hint } of USER_CONFIG_FILES) {
     const left = path.join(root, name);
     const target = path.join(dataRoot, name);
     if (existsSync(left) && !existsSync(target)) {
-      console.warn(`⚠️  ${name} is in the code folder, not the data folder, so plugins do not read it: move ${left} to ${target}`);
+      console.warn(`⚠️  ${name} is in the code folder, not the data folder, so plugins do not read it: ${hint(left, target)}`);
     }
   }
 }
